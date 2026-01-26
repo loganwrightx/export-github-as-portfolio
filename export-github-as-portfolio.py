@@ -6,6 +6,7 @@ import datetime
 from fpdf import FPDF
 import os
 import re
+import tempfile
 from sympy.parsing.latex import parse_latex
 from sympy import pretty
 
@@ -66,6 +67,15 @@ def fetch_contributions(username, token=None):
     if "errors" in data:
         raise ValueError(data["errors"])
     return data["data"]["user"]["contributionsCollection"]["contributionCalendar"]
+
+def fetch_avatar_url(username, token=None):
+    headers = {}
+    if token:
+        headers["Authorization"] = f"token {token}"
+    url = f"https://api.github.com/users/{username}"
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+    return resp.json()["avatar_url"]
 
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip("#")
@@ -183,7 +193,16 @@ def process_inline(pdf, text):
                 if bpart:
                     pdf.multi_cell(0, 5, bpart)
 
-def generate_pdf(username, repos, contrib, prioritize, exclude, output):
+def generate_pdf(username, repos, contrib, prioritize, exclude, output, avatar_url):
+    # Download avatar to temp file
+    response = requests.get(avatar_url)
+    content_type = response.headers['content-type']
+    ext = content_type.split('/')[-1]  # e.g., 'png' or 'jpeg'
+    suffix = '.' + ext if ext in ['png', 'jpeg', 'jpg', 'gif'] else '.png'  # Default to png if unknown
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
+        temp_file.write(response.content)
+        temp_avatar_path = temp_file.name
+
     # Prepare sorted repos
     prio_repos = [r for r in repos if r["name"] in prioritize]
     prio_repos.sort(key=lambda r: prioritize.index(r["name"]))
@@ -302,6 +321,9 @@ def generate_pdf(username, repos, contrib, prioritize, exclude, output):
     final_pdf.add_page()
     final_pdf.set_font("helvetica", "B", 16)
     final_pdf.cell(0, 10, f"{username}'s GitHub Portfolio", align="C")
+    final_pdf.ln(20)
+    # Add avatar
+    final_pdf.image(temp_avatar_path, x=80, y=final_pdf.get_y(), w=50, h=50)
 
     # TOC pages
     final_pdf.add_page()
@@ -395,11 +417,13 @@ def generate_pdf(username, repos, contrib, prioritize, exclude, output):
         final_pdf.ln(10)
 
     final_pdf.output(output)
+    os.unlink(temp_avatar_path)  # Clean up temp file
 
-def generate_html(username, repos, contrib, prioritize, exclude, output):
+def generate_html(username, repos, contrib, prioritize, exclude, output, avatar_url):
     with open(output, "w") as f:
         f.write("<html><head><title>{}'s GitHub Portfolio</title></head><body>\n".format(username))
         f.write("<h1>{}'s GitHub Portfolio</h1>\n".format(username))
+        f.write('<img src="{}" alt="Profile Picture" width="100" height="100">\n'.format(avatar_url))
         if contrib:
             f.write("<h2>Contribution Calendar</h2>\n")
             weeks = contrib["weeks"]
@@ -429,12 +453,14 @@ def generate_html(username, repos, contrib, prioritize, exclude, output):
                 f.write("<pre>{}</pre>\n".format(readme))
         f.write("</body></html>")
 
-def generate_md(username, repos, contrib, prioritize, exclude, output):
+def generate_md(username, repos, contrib, prioritize, exclude, output, avatar_url):
     with open(output, "w") as f:
         f.write("# {}'s GitHub Portfolio\n\n".format(username))
+        f.write("![Profile Picture]({})\n\n".format(avatar_url))
         if contrib:
             f.write("## Contribution Calendar\n\n")
             f.write("Total contributions in the last year: {}\n\n".format(contrib["totalContributions"]))
+            # Visual not supported, just summary
 
         prio_repos = [r for r in repos if r["name"] in prioritize]
         prio_repos.sort(key=lambda r: prioritize.index(r["name"]))
@@ -465,18 +491,19 @@ if __name__ == "__main__":
 
     repos = fetch_repos(args.username, args.token)
     contrib = None if args.no_calendar else fetch_contributions(args.username, args.token)
+    avatar_url = fetch_avatar_url(args.username, args.token)
 
     if args.format == "pdf":
         if not args.output.endswith(".pdf"):
             args.output += ".pdf"
-        generate_pdf(args.username, repos, contrib, args.prioritize, args.exclude, args.output)
+        generate_pdf(args.username, repos, contrib, args.prioritize, args.exclude, args.output, avatar_url)
     elif args.format == "html":
         if not args.output.endswith(".html"):
             args.output += ".html"
-        generate_html(args.username, repos, contrib, args.prioritize, args.exclude, args.output)
+        generate_html(args.username, repos, contrib, args.prioritize, args.exclude, args.output, avatar_url)
     elif args.format == "md":
         if not args.output.endswith(".md"):
             args.output += ".md"
-        generate_md(args.username, repos, contrib, args.prioritize, args.exclude, args.output)
+        generate_md(args.username, repos, contrib, args.prioritize, args.exclude, args.output, avatar_url)
 
     print(f"Portfolio generated: {args.output}")
